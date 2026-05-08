@@ -1,0 +1,7 @@
+{
+    "python.defaultInterpreterPath": "python3",
+    "editor.rulers": [100],
+    "files.associations": {
+        "PROTOCOL.md": "markdown"
+    }
+}
