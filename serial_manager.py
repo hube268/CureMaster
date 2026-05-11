@@ -113,10 +113,13 @@ class SerialManager:
         except serial.serialutil.SerialException as e:
             raise ConnectionError(f"Cannot open {self._port}: {e}") from e
 
-        time.sleep(0.3)
+        # Opening the port triggers a DTR reset on the Arduino UNO R4 Minima,
+        # which causes a full reboot (~2s). Wait for it, then send the keep-alive
+        # which also acts as the handshake that starts frame streaming.
+        time.sleep(2.0)
         self._ser.reset_input_buffer()
-        self._send_raw(b"\x18")  # soft reset
-        time.sleep(0.5)
+        self._send_raw(b"<?>\n")
+        time.sleep(0.3)
 
         self._running = True
         self._read_thread = threading.Thread(target=self._read_loop, daemon=True, name="serial-reader")
