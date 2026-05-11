@@ -85,6 +85,10 @@ def main():
         oven.set_duration(hours=0, mins=mins, secs=0)
         time.sleep(0.5)
 
+        log.info("Turning fan on")
+        oven.set_fan(True)
+        time.sleep(0.5)
+
         log.info("Starting warmup — heating to %.0f°F", args.temp)
         oven.start_warmup()
 
