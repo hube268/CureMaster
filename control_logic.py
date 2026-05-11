@@ -3,6 +3,7 @@ Oven controller — high-level API over SerialManager.
 Translates user intent into PCB command sequences.
 """
 import logging
+import threading
 from typing import Optional, Union
 
 from config import MOCK_MODE
@@ -39,6 +40,7 @@ class OvenController:
         self._mgr.on_error = self._on_error
 
         self._last_state: Optional[str] = None
+        self._state_lock = threading.Lock()
         self.on_frame: Optional[callable] = None
         self.on_state_change: Optional[callable] = None
 
@@ -116,9 +118,13 @@ class OvenController:
     # ── Internal ─────────────────────────────────────────────────
 
     def _on_frame(self, frame: OvenFrame):
-        if frame.state != self._last_state:
-            log.info("State: %s → %s", self._last_state, frame.state)
-            self._last_state = frame.state
+        with self._state_lock:
+            changed = frame.state != self._last_state
+            prev = self._last_state
+            if changed:
+                self._last_state = frame.state
+        if changed:
+            log.info("State: %s → %s", prev, frame.state)
             if self.on_state_change:
                 self.on_state_change(frame.state, frame)
         if self.on_frame:

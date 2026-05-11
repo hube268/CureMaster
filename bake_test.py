@@ -11,6 +11,7 @@ Press Ctrl+C at any time to cancel and return the oven to IDLE.
 import argparse
 import logging
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -23,6 +24,9 @@ log = logging.getLogger(__name__)
 
 from control_logic import OvenController
 
+WARMUP_TIMEOUT_MIN = 60
+CURE_TIMEOUT_EXTRA_MIN = 10  # extra headroom beyond the requested cure time
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -34,10 +38,19 @@ def main():
 
     state_log: list[tuple[str, str]] = []
 
+    # Events set by the state-change callback — never missed regardless of how
+    # briefly the PCB stays in a given state.
+    at_temp_event = threading.Event()
+    cure_done_event = threading.Event()
+
     def on_state(state: str, frame):
         ts = datetime.now().strftime("%H:%M:%S")
         state_log.append((ts, state))
         print(f"\n[{ts}]  *** STATE → {state} ***\n")
+        if state == "AT TEMP":
+            at_temp_event.set()
+        if state in ("COOLDOWN", "IDLE"):
+            cure_done_event.set()
 
     def on_frame(frame):
         print(
@@ -75,30 +88,27 @@ def main():
         log.info("Starting warmup — heating to %.0f°F", args.temp)
         oven.start_warmup()
 
-        # Wait for AT TEMP
-        log.info("Waiting for AT TEMP...")
-        while True:
-            frame = oven.last_frame
-            if frame and frame.state == "AT TEMP":
-                break
-            if frame and frame.state not in ("IDLE", "WARMING UP", "AT TEMP"):
-                log.error("Unexpected state during warmup: %s", frame.state)
-                break
-            time.sleep(0.5)
+        log.info("Waiting for AT TEMP (timeout %d min)...", WARMUP_TIMEOUT_MIN)
+        reached = at_temp_event.wait(timeout=WARMUP_TIMEOUT_MIN * 60)
 
-        if oven.last_frame and oven.last_frame.state == "AT TEMP":
+        if not reached:
+            log.error("Timed out waiting for AT TEMP after %d minutes", WARMUP_TIMEOUT_MIN)
+            oven.cancel()
+        else:
             log.info("AT TEMP reached — starting cure timer")
             oven.start_cure()
 
-            # Wait for COOLDOWN or IDLE (cure complete)
-            log.info("Curing for %d minutes — waiting for COOLDOWN...", mins)
-            while True:
-                frame = oven.last_frame
-                if frame and frame.state in ("COOLDOWN", "IDLE"):
-                    break
-                time.sleep(1.0)
+            cure_timeout = (mins + CURE_TIMEOUT_EXTRA_MIN) * 60
+            log.info("Curing for %d min — waiting for COOLDOWN (timeout %d min)...",
+                     mins, mins + CURE_TIMEOUT_EXTRA_MIN)
+            finished = cure_done_event.wait(timeout=cure_timeout)
 
-            log.info("Cure cycle complete. Final state: %s", oven.last_frame.state if oven.last_frame else "?")
+            if not finished:
+                log.error("Timed out waiting for COOLDOWN after %d minutes", mins + CURE_TIMEOUT_EXTRA_MIN)
+                oven.cancel()
+            else:
+                log.info("Cure cycle complete. Final state: %s",
+                         oven.last_frame.state if oven.last_frame else "?")
 
     except KeyboardInterrupt:
         print()
@@ -109,15 +119,19 @@ def main():
     finally:
         oven.disconnect()
 
+    reached_states = {s for _, s in state_log}
+    required = {"WARMING UP", "AT TEMP", "CURING"}
+    missing = required - reached_states
+
     print("\n--- State transitions ---")
     for ts, state in state_log:
         print(f"  {ts}  {state}")
 
-    if len(state_log) >= 2:
-        print("\nBake test PASS — state machine responded correctly.")
+    if not missing:
+        print("\nBake test PASS — all required states reached.")
         sys.exit(0)
     else:
-        print("\nBake test INCOMPLETE — check serial connection and PCB state.")
+        print(f"\nBake test INCOMPLETE — missing states: {', '.join(sorted(missing))}")
         sys.exit(1)
 
 
